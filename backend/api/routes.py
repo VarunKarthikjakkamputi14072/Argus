@@ -1,0 +1,337 @@
+"""
+API routes for the Article Processing Platform.
+
+Provides endpoints for submitting URLs, querying articles,
+viewing LLM insights, and monitoring task queue status.
+"""
+
+import uuid
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, HttpUrl
+from sqlalchemy import select, func, or_
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
+
+from backend.db.session import get_db
+from backend.models.database import Article, ArticleMetadata, TaskStatus
+from backend.services.cache import url_cache
+from backend.celery_app import celery
+
+router = APIRouter()
+
+
+class SubmitURLRequest(BaseModel):
+    url: HttpUrl
+
+
+class SubmitBatchRequest(BaseModel):
+    urls: list[HttpUrl]
+
+
+class ArticleResponse(BaseModel):
+    id: str
+    url: str
+    title: Optional[str]
+    source_domain: Optional[str]
+    word_count: Optional[float]
+    status: str
+    scraped_at: Optional[datetime]
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class MetadataResponse(BaseModel):
+    summary: Optional[str]
+    entities: Optional[dict]
+    sentiment_score: Optional[float]
+    sentiment_label: Optional[str]
+    llm_model_used: Optional[str]
+    processed_at: Optional[datetime]
+
+
+class ArticleDetailResponse(ArticleResponse):
+    metadata: Optional[MetadataResponse]
+
+
+@router.post("/articles/submit", status_code=202)
+async def submit_url(request: SubmitURLRequest, db: AsyncSession = Depends(get_db)):
+    """Submit a single URL for scraping and LLM processing."""
+    url_str = str(request.url)
+
+    existing = await db.execute(select(Article).where(Article.url == url_str))
+    if existing.scalar_one_or_none():
+        raise HTTPException(status_code=409, detail="URL already submitted")
+
+    article = Article(
+        id=uuid.uuid4(),
+        url=url_str,
+        status=TaskStatus.PENDING,
+    )
+    db.add(article)
+    await db.flush()
+
+    from backend.tasks.scraping import scrape_article
+    task = scrape_article.delay(str(article.id), url_str)
+
+    article.celery_task_id = task.id
+    article.status = TaskStatus.STARTED
+
+    return {
+        "article_id": str(article.id),
+        "task_id": task.id,
+        "status": "submitted",
+    }
+
+
+@router.post("/articles/submit-batch", status_code=202)
+async def submit_batch(request: SubmitBatchRequest, db: AsyncSession = Depends(get_db)):
+    """Submit multiple URLs for batch processing."""
+    results = []
+    for url in request.urls:
+        url_str = str(url)
+        existing = await db.execute(select(Article).where(Article.url == url_str))
+        if existing.scalar_one_or_none():
+            results.append({"url": url_str, "status": "duplicate", "article_id": None})
+            continue
+
+        article = Article(id=uuid.uuid4(), url=url_str, status=TaskStatus.PENDING)
+        db.add(article)
+        await db.flush()
+
+        from backend.tasks.scraping import scrape_article
+        task = scrape_article.delay(str(article.id), url_str)
+        article.celery_task_id = task.id
+        article.status = TaskStatus.STARTED
+
+        results.append({
+            "url": url_str,
+            "status": "submitted",
+            "article_id": str(article.id),
+            "task_id": task.id,
+        })
+
+    return {"submitted": len([r for r in results if r["status"] == "submitted"]), "results": results}
+
+
+@router.get("/articles", response_model=list[ArticleResponse])
+async def list_articles(
+    status: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(default=50, le=200),
+    offset: int = Query(default=0, ge=0),
+    db: AsyncSession = Depends(get_db),
+):
+    """List articles with optional filtering by status or search term."""
+    query = select(Article).order_by(Article.created_at.desc())
+
+    if status:
+        try:
+            task_status = TaskStatus(status)
+            query = query.where(Article.status == task_status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+
+    if search:
+        search_pattern = f"%{search}%"
+        query = query.where(
+            or_(
+                Article.title.ilike(search_pattern),
+                Article.url.ilike(search_pattern),
+                Article.source_domain.ilike(search_pattern),
+            )
+        )
+
+    query = query.limit(limit).offset(offset)
+    result = await db.execute(query)
+    articles = result.scalars().all()
+
+    return [
+        ArticleResponse(
+            id=str(a.id),
+            url=a.url,
+            title=a.title,
+            source_domain=a.source_domain,
+            word_count=a.word_count,
+            status=a.status.value,
+            scraped_at=a.scraped_at,
+            created_at=a.created_at,
+        )
+        for a in articles
+    ]
+
+
+@router.get("/articles/{article_id}")
+async def get_article(article_id: str, db: AsyncSession = Depends(get_db)):
+    """Get detailed article information including LLM metadata."""
+    try:
+        uid = uuid.UUID(article_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid article ID")
+
+    result = await db.execute(
+        select(Article).options(joinedload(Article.metadata_entry)).where(Article.id == uid)
+    )
+    article = result.scalar_one_or_none()
+
+    if not article:
+        raise HTTPException(status_code=404, detail="Article not found")
+
+    metadata = None
+    if article.metadata_entry:
+        m = article.metadata_entry
+        metadata = {
+            "summary": m.summary,
+            "entities": m.entities,
+            "sentiment_score": m.sentiment_score,
+            "sentiment_label": m.sentiment_label,
+            "llm_model_used": m.llm_model_used,
+            "processed_at": m.processed_at.isoformat() if m.processed_at else None,
+        }
+
+    return {
+        "id": str(article.id),
+        "url": article.url,
+        "title": article.title,
+        "source_domain": article.source_domain,
+        "word_count": article.word_count,
+        "status": article.status.value,
+        "error_message": article.error_message,
+        "scraped_at": article.scraped_at.isoformat() if article.scraped_at else None,
+        "created_at": article.created_at.isoformat(),
+        "metadata": metadata,
+    }
+
+
+@router.get("/queue/status")
+async def queue_status():
+    """Get current Celery queue statistics and active task info."""
+    inspector = celery.control.inspect()
+
+    active = inspector.active() or {}
+    reserved = inspector.reserved() or {}
+    stats = inspector.stats() or {}
+
+    total_active = sum(len(tasks) for tasks in active.values())
+    total_reserved = sum(len(tasks) for tasks in reserved.values())
+
+    workers = []
+    for worker_name, worker_stats in stats.items():
+        worker_active = active.get(worker_name, [])
+        worker_reserved = reserved.get(worker_name, [])
+        workers.append({
+            "name": worker_name,
+            "status": "online",
+            "active_tasks": len(worker_active),
+            "reserved_tasks": len(worker_reserved),
+            "total_completed": worker_stats.get("total", {}).get(
+                "backend.tasks.scraping.scrape_article", 0
+            ) + worker_stats.get("total", {}).get(
+                "backend.tasks.processing.process_article", 0
+            ),
+            "pool_size": worker_stats.get("pool", {}).get("max-concurrency", 0),
+            "tasks": [
+                {
+                    "id": t["id"],
+                    "name": t["name"],
+                    "started": t.get("time_start"),
+                }
+                for t in worker_active
+            ],
+        })
+
+    return {
+        "total_active": total_active,
+        "total_reserved": total_reserved,
+        "total_workers": len(stats),
+        "workers": workers,
+    }
+
+
+@router.get("/queue/tasks")
+async def queue_tasks(db: AsyncSession = Depends(get_db)):
+    """Get articles currently being processed (in-flight tasks)."""
+    result = await db.execute(
+        select(Article)
+        .where(Article.status.in_([TaskStatus.STARTED, TaskStatus.SCRAPING, TaskStatus.PROCESSING]))
+        .order_by(Article.created_at.desc())
+    )
+    articles = result.scalars().all()
+
+    return [
+        {
+            "article_id": str(a.id),
+            "url": a.url,
+            "status": a.status.value,
+            "task_id": a.celery_task_id,
+            "created_at": a.created_at.isoformat(),
+        }
+        for a in articles
+    ]
+
+
+@router.get("/stats")
+async def platform_stats(db: AsyncSession = Depends(get_db)):
+    """Get overall platform statistics."""
+    total = await db.execute(select(func.count(Article.id)))
+    completed = await db.execute(
+        select(func.count(Article.id)).where(Article.status == TaskStatus.COMPLETED)
+    )
+    failed = await db.execute(
+        select(func.count(Article.id)).where(Article.status == TaskStatus.FAILED)
+    )
+    in_progress = await db.execute(
+        select(func.count(Article.id)).where(
+            Article.status.in_([TaskStatus.STARTED, TaskStatus.SCRAPING, TaskStatus.PROCESSING])
+        )
+    )
+    avg_sentiment = await db.execute(select(func.avg(ArticleMetadata.sentiment_score)))
+
+    cache_stats = url_cache.get_stats()
+
+    return {
+        "total_articles": total.scalar() or 0,
+        "completed": completed.scalar() or 0,
+        "failed": failed.scalar() or 0,
+        "in_progress": in_progress.scalar() or 0,
+        "avg_sentiment": round(avg_sentiment.scalar() or 0, 3),
+        "cache": cache_stats,
+    }
+
+
+@router.get("/insights")
+async def get_insights(
+    limit: int = Query(default=20, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    """Get LLM-processed insights for completed articles."""
+    result = await db.execute(
+        select(Article)
+        .options(joinedload(Article.metadata_entry))
+        .where(Article.status == TaskStatus.COMPLETED)
+        .order_by(Article.created_at.desc())
+        .limit(limit)
+    )
+    articles = result.scalars().unique().all()
+
+    insights = []
+    for a in articles:
+        if a.metadata_entry:
+            m = a.metadata_entry
+            insights.append({
+                "article_id": str(a.id),
+                "url": a.url,
+                "title": a.title,
+                "source_domain": a.source_domain,
+                "summary": m.summary,
+                "entities": m.entities,
+                "sentiment_score": m.sentiment_score,
+                "sentiment_label": m.sentiment_label,
+                "processed_at": m.processed_at.isoformat() if m.processed_at else None,
+            })
+
+    return insights

@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Argus — See everything. Understand anything.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app">
+        <header class="header">
+            <div class="header-content">
+                <h1 class="logo">Argus</h1>
+                <nav class="nav">
+                    <button class="nav-btn active" data-view="dashboard">Dashboard</button>
+                    <button class="nav-btn" data-view="insights">Insights</button>
+                    <button class="nav-btn" data-view="queue">Queue</button>
+                </nav>
+            </div>
+        </header>
+
+        <main class="main">
+            <!-- Dashboard View -->
+            <section id="view-dashboard" class="view active">
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <span class="stat-label">Total Articles</span>
+                        <span class="stat-value" id="stat-total">0</span>
+                    </div>
+                    <div class="stat-card stat-success">
+                        <span class="stat-label">Completed</span>
+                        <span class="stat-value" id="stat-completed">0</span>
+                    </div>
+                    <div class="stat-card stat-warning">
+                        <span class="stat-label">In Progress</span>
+                        <span class="stat-value" id="stat-progress">0</span>
+                    </div>
+                    <div class="stat-card stat-error">
+                        <span class="stat-label">Failed</span>
+                        <span class="stat-value" id="stat-failed">0</span>
+                    </div>
+                    <div class="stat-card stat-info">
+                        <span class="stat-label">Avg Sentiment</span>
+                        <span class="stat-value" id="stat-sentiment">0.0</span>
+                    </div>
+                    <div class="stat-card">
+                        <span class="stat-label">Cached URLs</span>
+                        <span class="stat-value" id="stat-cached">0</span>
+                    </div>
+                </div>
+
+                <div class="submit-section">
+                    <h2>Submit Article URL</h2>
+                    <form id="submit-form" class="submit-form">
+                        <input
+                            type="url"
+                            id="url-input"
+                            placeholder="https://example.com/article..."
+                            required
+                        >
+                        <button type="submit" class="btn btn-primary">Process</button>
+                    </form>
+                    <div id="submit-feedback" class="feedback hidden"></div>
+                </div>
+
+                <div class="search-section">
+                    <h2>Article Database</h2>
+                    <div class="search-bar">
+                        <input
+                            type="text"
+                            id="search-input"
+                            placeholder="Search articles by title, URL, or domain..."
+                        >
+                        <select id="status-filter">
+                            <option value="">All Statuses</option>
+                            <option value="completed">Completed</option>
+                            <option value="started">Started</option>
+                            <option value="scraping">Scraping</option>
+                            <option value="processing">Processing</option>
+                            <option value="failed">Failed</option>
+                        </select>
+                    </div>
+                    <div id="articles-list" class="articles-list">
+                        <p class="empty-state">No articles found. Submit a URL to get started.</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Insights View -->
+            <section id="view-insights" class="view">
+                <h2>LLM Insights</h2>
+                <div id="insights-list" class="insights-list">
+                    <p class="empty-state">No processed insights yet.</p>
+                </div>
+            </section>
+
+            <!-- Queue View -->
+            <section id="view-queue" class="view">
+                <h2>Task Queue Monitor</h2>
+                <div class="queue-overview">
+                    <div class="queue-stat">
+                        <span class="queue-stat-label">Active Tasks</span>
+                        <span class="queue-stat-value" id="queue-active">0</span>
+                    </div>
+                    <div class="queue-stat">
+                        <span class="queue-stat-label">Reserved</span>
+                        <span class="queue-stat-value" id="queue-reserved">0</span>
+                    </div>
+                    <div class="queue-stat">
+                        <span class="queue-stat-label">Workers Online</span>
+                        <span class="queue-stat-value" id="queue-workers">0</span>
+                    </div>
+                </div>
+                <div id="workers-list" class="workers-list">
+                    <p class="empty-state">Connecting to queue...</p>
+                </div>
+                <h3>In-Flight Tasks</h3>
+                <div id="inflight-tasks" class="inflight-tasks">
+                    <p class="empty-state">No tasks in flight.</p>
+                </div>
+            </section>
+        </main>
+
+        <!-- Article Detail Modal -->
+        <div id="article-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <button class="modal-close">&times;</button>
+                <div id="modal-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

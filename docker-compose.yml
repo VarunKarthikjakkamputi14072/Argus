@@ -1,0 +1,178 @@
+version: "3.9"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - pipeline-net
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: pipeline_user
+      POSTGRES_PASSWORD: pipeline_pass
+      POSTGRES_DB: article_pipeline
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pipeline_user -d article_pipeline"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - pipeline-net
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+    volumes:
+      - .:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeline-net
+
+  celery-worker-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A backend.celery_app worker --loglevel=info --concurrency=4 -Q scraping,processing -n worker1@%h --without-gossip --without-mingle --max-tasks-per-child=200
+    stop_grace_period: 120s
+    environment:
+      - CELERY_WORKER_SHUTDOWN_TIMEOUT=110
+      - DATABASE_URL=postgresql+asyncpg://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - SYNC_DATABASE_URL=postgresql://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+    volumes:
+      - .:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeline-net
+
+  celery-worker-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A backend.celery_app worker --loglevel=info --concurrency=4 -Q scraping,processing -n worker2@%h --without-gossip --without-mingle --max-tasks-per-child=200
+    stop_grace_period: 120s
+    environment:
+      - CELERY_WORKER_SHUTDOWN_TIMEOUT=110
+      - DATABASE_URL=postgresql+asyncpg://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - SYNC_DATABASE_URL=postgresql://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+    volumes:
+      - .:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeline-net
+
+  celery-worker-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A backend.celery_app worker --loglevel=info --concurrency=2 -Q processing -n worker3@%h --without-gossip --without-mingle --max-tasks-per-child=200
+    stop_grace_period: 120s
+    environment:
+      - CELERY_WORKER_SHUTDOWN_TIMEOUT=110
+      - DATABASE_URL=postgresql+asyncpg://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - SYNC_DATABASE_URL=postgresql://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+      - LLM_API_KEY=${LLM_API_KEY:-}
+      - LLM_API_URL=${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+    volumes:
+      - .:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    networks:
+      - pipeline-net
+
+  celery-beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A backend.celery_app beat --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - SYNC_DATABASE_URL=postgresql://pipeline_user:pipeline_pass@postgres:5432/article_pipeline
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    volumes:
+      - .:/app
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pipeline-net
+
+  flower:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: celery -A backend.celery_app flower --port=5555
+    ports:
+      - "5555:5555"
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/1
+      - CELERY_RESULT_BACKEND=redis://redis:6379/2
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - pipeline-net
+
+volumes:
+  pgdata:
+
+networks:
+  pipeline-net:
+    driver: bridge
