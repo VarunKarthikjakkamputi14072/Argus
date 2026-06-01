@@ -9,15 +9,19 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import redis.asyncio as aioredis
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from backend.config import get_settings
 from backend.db.session import get_db
 from backend.models.database import Article, ArticleMetadata, TaskStatus
 from backend.services.cache import url_cache
+from backend.services.events import EVENTS_CHANNEL
 from backend.celery_app import celery
 
 router = APIRouter()
@@ -335,3 +339,48 @@ async def get_insights(
             })
 
     return insights
+
+
+@router.get("/events")
+async def events(request: Request):
+    """Server-Sent Events stream of live article status changes.
+
+    Subscribes to the Redis channel that the Celery workers publish to, so the
+    dashboard can update without polling. Sends a keep-alive comment every
+    15 seconds so idle connections (and proxies) don't drop the stream.
+    """
+    settings = get_settings()
+
+    async def event_stream():
+        client = aioredis.from_url(settings.redis_url, decode_responses=True)
+        pubsub = client.pubsub()
+        await pubsub.subscribe(EVENTS_CHANNEL)
+        try:
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                message = await pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=15.0
+                )
+                if message is None:
+                    yield ": keep-alive\n\n"
+                    continue
+                data = message["data"]
+                if isinstance(data, bytes):
+                    data = data.decode()
+                yield f"data: {data}\n\n"
+        finally:
+            await pubsub.unsubscribe(EVENTS_CHANNEL)
+            await pubsub.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )

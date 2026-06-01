@@ -4,7 +4,10 @@ __pycache__/
 *.so
 .env
 .venv/
+.venv-test/
 venv/
+.ruff_cache/
+celerybeat-schedule
 *.egg-info/
 dist/
 build/

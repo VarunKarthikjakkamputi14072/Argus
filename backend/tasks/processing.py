@@ -13,6 +13,7 @@ from sqlalchemy import update
 
 from backend.db.session import SyncSessionLocal
 from backend.models.database import Article, ArticleMetadata, TaskStatus
+from backend.services.events import publish_event
 from backend.services.llm_processor import llm_processor
 
 logger = get_task_logger(__name__)
@@ -70,6 +71,12 @@ def process_article(self, article_id: str):
             .values(status=TaskStatus.COMPLETED)
         )
         session.commit()
+        publish_event(
+            "status", article_id=article_id, status="completed",
+            title=article.title, source_domain=article.source_domain,
+            sentiment_score=result["sentiment_score"],
+            sentiment_label=result["sentiment_label"],
+        )
 
         logger.info(
             f"Processing complete for {article_id}: "

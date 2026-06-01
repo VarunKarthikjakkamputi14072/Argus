@@ -1,8 +1,13 @@
 const API_BASE = '/api';
+// When the live event stream is up we only poll occasionally as a safety net.
+// If it drops we fall back to the faster poll.
 const POLL_INTERVAL = 5000;
+const POLL_INTERVAL_LIVE = 30000;
 
 let currentView = 'dashboard';
 let pollTimer = null;
+let eventSource = null;
+let liveConnected = false;
 
 // --- Navigation ---
 
@@ -293,12 +298,76 @@ function refreshCurrentView() {
     }
 }
 
-function startPolling() {
+function startPolling(interval = POLL_INTERVAL) {
     if (pollTimer) clearInterval(pollTimer);
-    pollTimer = setInterval(refreshCurrentView, POLL_INTERVAL);
+    pollTimer = setInterval(refreshCurrentView, interval);
+}
+
+// --- Live updates (SSE) ---
+
+let statsDebounce = null;
+function refreshSoon() {
+    // Coalesce bursts of events into a single refresh.
+    clearTimeout(statsDebounce);
+    statsDebounce = setTimeout(() => {
+        loadStats();
+        if (currentView === 'insights') loadInsights();
+        if (currentView === 'queue') loadQueueStatus();
+    }, 300);
+}
+
+function applyStatusEvent(evt) {
+    // Update the matching row in place if it's on screen; otherwise reload the list.
+    const row = document.querySelector(`.article-row[data-id="${evt.article_id}"]`);
+    if (row) {
+        const badge = row.querySelector('.status-badge');
+        if (badge) {
+            badge.textContent = evt.status;
+            badge.className = `status-badge status-${evt.status}`;
+        }
+        if (evt.title) {
+            const titleEl = row.querySelector('.article-title');
+            if (titleEl && titleEl.textContent === 'Untitled') {
+                titleEl.textContent = evt.title;
+            }
+        }
+    } else if (currentView === 'dashboard') {
+        loadArticles();
+    }
+    refreshSoon();
+}
+
+function connectEvents() {
+    eventSource = new EventSource(`${API_BASE}/events`);
+
+    eventSource.onopen = () => {
+        liveConnected = true;
+        startPolling(POLL_INTERVAL_LIVE);
+    };
+
+    eventSource.onmessage = (e) => {
+        let evt;
+        try {
+            evt = JSON.parse(e.data);
+        } catch {
+            return;
+        }
+        if (evt.type === 'status' && evt.article_id) {
+            applyStatusEvent(evt);
+        }
+    };
+
+    eventSource.onerror = () => {
+        // Browser auto-reconnects EventSource; until it does, poll faster.
+        if (liveConnected) {
+            liveConnected = false;
+            startPolling(POLL_INTERVAL);
+        }
+    };
 }
 
 // --- Init ---
 
 refreshCurrentView();
 startPolling();
+connectEvents();

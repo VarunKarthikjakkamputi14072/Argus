@@ -11,9 +11,10 @@ from sqlalchemy import (
     Index,
     Enum as SAEnum,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, relationship
 import enum
+
+from backend.models.types import GUID, JSONColumn
 
 
 class Base(DeclarativeBase):
@@ -32,7 +33,7 @@ class TaskStatus(enum.Enum):
 class Article(Base):
     __tablename__ = "articles"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     url = Column(String(2048), nullable=False, unique=True)
     title = Column(String(512), nullable=True)
     raw_content = Column(Text, nullable=True)
@@ -65,16 +66,16 @@ class Article(Base):
 class ArticleMetadata(Base):
     __tablename__ = "article_metadata"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     article_id = Column(
-        UUID(as_uuid=True), ForeignKey("articles.id", ondelete="CASCADE"), nullable=False, unique=True
+        GUID(), ForeignKey("articles.id", ondelete="CASCADE"), nullable=False, unique=True
     )
     summary = Column(Text, nullable=True)
-    entities = Column(JSONB, nullable=True)
+    entities = Column(JSONColumn, nullable=True)
     sentiment_score = Column(Float, nullable=True)
     sentiment_label = Column(String(32), nullable=True)
     llm_model_used = Column(String(128), nullable=True)
-    token_usage = Column(JSONB, nullable=True)
+    token_usage = Column(JSONColumn, nullable=True)
 
     processed_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
