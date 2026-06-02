@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
+import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -25,6 +26,11 @@ from backend.services.events import EVENTS_CHANNEL
 from backend.celery_app import celery
 
 router = APIRouter()
+
+
+class SeedTopicRequest(BaseModel):
+    topic: str
+    limit: int = 10  # max articles to seed per call (capped at 20)
 
 
 class SubmitURLRequest(BaseModel):
@@ -120,6 +126,94 @@ async def submit_batch(request: SubmitBatchRequest, db: AsyncSession = Depends(g
         })
 
     return {"submitted": len([r for r in results if r["status"] == "submitted"]), "results": results}
+
+
+@router.post("/articles/seed-topic", status_code=202)
+async def seed_topic(request: SeedTopicRequest, db: AsyncSession = Depends(get_db)):
+    """Pull news articles for a topic from APIForge and queue them for processing.
+
+    APIForge acts as a caching, rate-limited proxy in front of NewsAPI — repeated
+    calls for the same topic within the cache window hit Redis, not the upstream.
+    The returned article URLs are fed directly into the existing batch scrape flow.
+
+    Requires APIFORGE_BASE_URL and APIFORGE_API_KEY to be set in the environment.
+    Returns 503 if APIForge is unreachable, 400 if the integration is not configured.
+    """
+    settings = get_settings()
+
+    if not settings.apiforge_base_url or not settings.apiforge_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "APIForge integration not configured. "
+                "Set APIFORGE_BASE_URL and APIFORGE_API_KEY in your environment."
+            ),
+        )
+
+    limit = min(request.limit, 20)
+
+    # Call APIForge — it handles caching, rate limiting, and circuit breaking
+    # for the NewsAPI upstream so Argus doesn't have to.
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                f"{settings.apiforge_base_url.rstrip('/')}/api/news",
+                params={"topic": request.topic, "limit": limit},
+                headers={"X-API-Key": settings.apiforge_api_key},
+            )
+            resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"APIForge returned {exc.response.status_code} for topic '{request.topic}'",
+        ) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Could not reach APIForge at {settings.apiforge_base_url}: {exc}",
+        ) from exc
+
+    news_data = resp.json()
+    articles_list = news_data.get("articles", [])
+
+    if not articles_list:
+        return {"submitted": 0, "results": [], "topic": request.topic, "source": "apiforge"}
+
+    # Extract URLs and feed into the existing batch submit flow.
+    results = []
+    for item in articles_list:
+        url_str = item.get("url")
+        if not url_str:
+            continue
+
+        existing = await db.execute(select(Article).where(Article.url == url_str))
+        if existing.scalar_one_or_none():
+            results.append({"url": url_str, "status": "duplicate", "article_id": None})
+            continue
+
+        article = Article(id=uuid.uuid4(), url=url_str, status=TaskStatus.PENDING)
+        db.add(article)
+        await db.flush()
+
+        from backend.tasks.scraping import scrape_article
+        task = scrape_article.delay(str(article.id), url_str)
+        article.celery_task_id = task.id
+        article.status = TaskStatus.STARTED
+
+        results.append({
+            "url": url_str,
+            "status": "submitted",
+            "article_id": str(article.id),
+            "task_id": task.id,
+        })
+
+    submitted_count = len([r for r in results if r["status"] == "submitted"])
+    return {
+        "submitted": submitted_count,
+        "results": results,
+        "topic": request.topic,
+        "source": "apiforge",
+    }
 
 
 @router.get("/articles", response_model=list[ArticleResponse])

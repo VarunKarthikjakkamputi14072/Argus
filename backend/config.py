@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     scrape_timeout: int = 30
     max_retries: int = 3
 
+    # Optional APIForge integration.
+    # When set, the /articles/seed-topic endpoint calls APIForge's cached
+    # NewsAPI feed instead of requiring manual URL submission.
+    apiforge_base_url: str = ""   # e.g. http://localhost:8000
+    apiforge_api_key: str = ""    # af_... key from APIForge developer portal
+
     class Config:
         env_file = ".env"
         case_sensitive = False
