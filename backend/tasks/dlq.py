@@ -1,6 +1,7 @@
 from backend.celery_app import celery
 from backend.db.session import SyncSessionLocal
 from backend.models.database import Article, TaskStatus
+from backend.services.events import publish_event
 import logging
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,10 @@ def handle_dead_letter(article_id: str, error: str, original_task: str):
             article.status = TaskStatus.FAILED
             article.error_message = f"[DLQ] {error}"
             session.commit()
+            publish_event(
+                "status", article_id=article_id, status="failed",
+                error=error, task=original_task,
+            )
     except Exception as e:
         logger.error(f"Failed to process DLQ for {article_id}: {e}")
         session.rollback()

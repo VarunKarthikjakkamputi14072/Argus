@@ -1,6 +1,13 @@
 # Argus — See everything. Understand anything.
 
-A distributed, async data pipeline for scraping web articles, processing them through an LLM for structured analysis, and presenting insights through a real-time dashboard.
+A distributed, async pipeline that scrapes web articles, runs them through an LLM for
+structured analysis (summary, entities, sentiment), and streams the results to a live
+dashboard.
+
+I built this to work through the moving parts of a real task-queue system — backpressure,
+retries, dead-letter handling, deduplication, and pushing live updates to a browser —
+rather than just calling an LLM in a request handler. The section below on design
+decisions explains the choices behind it.
 
 ## Architecture
 
@@ -24,7 +31,44 @@ A distributed, async data pipeline for scraping web articles, processing them th
 - **Redis** — Message broker + application-level LRU URL cache with configurable eviction
 - **PostgreSQL** — Persistent storage for articles and LLM-extracted metadata
 - **LLM Service** — Processes article text to extract summaries, entities, and sentiment
-- **Frontend** — Vanilla HTML/CSS/JS dashboard with real-time polling
+- **Frontend** — Vanilla HTML/CSS/JS dashboard, updated live over Server-Sent Events (with polling as a fallback)
+
+## Design decisions
+
+A few choices I made on purpose, and why:
+
+- **Two Celery queues, not one.** Scraping is I/O-bound and network-flaky; LLM processing
+  is slower and costs money per call. Splitting them into `scraping` and `processing`
+  queues means I can scale or rate-limit each independently, and a backlog of slow LLM
+  calls never blocks fresh scrapes.
+- **`acks_late` + `prefetch=1`.** Tasks are acknowledged only after they finish, so if a
+  worker dies mid-task the job goes back on the queue instead of vanishing. Prefetch of 1
+  stops a single worker from hoarding messages it can't get to — simple backpressure that
+  keeps work spread across workers.
+- **A dead-letter queue.** After a task exhausts its retries it's handed to a
+  `dead_letter` queue and the article is marked failed with the reason, instead of the
+  failure disappearing into the logs. It's the difference between "something broke" and
+  "this URL broke because X".
+- **Two-tier URL cache.** Deduplication runs at the app level (a Redis sorted set scored
+  by last access, oldest 10% evicted in a batch when it's full) on top of Redis's own
+  `allkeys-lru`. The app-level tier lets me decide *what* survives eviction rather than
+  leaving it entirely to the server; the server policy is just a safety net.
+- **Idempotent submission.** The URL column is unique and the submit endpoint checks for
+  an existing article, so resubmitting the same URL returns 409 instead of scraping it
+  twice. The cache then short-circuits re-processing if the content is already there.
+- **The LLM can fail without taking the pipeline down.** A circuit breaker trips after
+  repeated LLM errors, and there's a heuristic fallback (regex-based summary, entity, and
+  sentiment extraction) so the system keeps producing output — and so the whole thing
+  runs locally with no API key.
+- **trafilatura for extraction.** I started with a hand-rolled BeautifulSoup pass over
+  `<p>` tags, which pulls in nav/ads/boilerplate. trafilatura does a much better job of
+  isolating the actual article body; the BeautifulSoup path is kept as a fallback for
+  pages it can't parse. The scraper also checks `robots.txt` before fetching.
+- **Live updates over SSE, not polling.** Workers publish status changes to a Redis
+  channel; the API subscribes and forwards them to the browser over Server-Sent Events.
+  Because the workers and the API are separate processes, Redis pub/sub is what lets the
+  API "see" what the workers are doing. The dashboard falls back to polling if the stream
+  drops.
 
 ## Quick Start
 
@@ -40,6 +84,9 @@ docker-compose up --build
 open http://localhost:8000
 ```
 
+The LLM API key is optional — without one, the analysis step uses the built-in heuristic
+fallback, so the full pipeline still runs end to end.
+
 ## API Endpoints
 
 | Method | Path | Description |
@@ -52,6 +99,7 @@ open http://localhost:8000
 | GET | `/api/queue/status` | Celery queue statistics |
 | GET | `/api/queue/tasks` | In-flight task list |
 | GET | `/api/stats` | Platform-wide statistics |
+| GET | `/api/events` | Server-Sent Events stream of live status changes |
 
 ## Cache Eviction Policy
 
@@ -70,22 +118,42 @@ The URL deduplication cache uses a two-tier strategy:
 │   ├── api/routes.py        # API endpoint definitions
 │   ├── db/session.py        # SQLAlchemy engine & sessions
 │   ├── models/database.py   # ORM models (Article, ArticleMetadata)
+│   ├── models/types.py      # Portable column types (Postgres + SQLite)
 │   ├── services/
 │   │   ├── cache.py         # Redis URL cache with LRU eviction
-│   │   ├── llm_processor.py # LLM integration service
-│   │   └── scraper.py       # HTTP scraping + HTML parsing
+│   │   ├── events.py        # Redis pub/sub helper for live updates
+│   │   ├── llm_processor.py # LLM integration + heuristic fallback
+│   │   └── scraper.py       # trafilatura extraction + robots.txt + BS4 fallback
 │   └── tasks/
 │       ├── scraping.py      # Celery scrape tasks
-│       └── processing.py    # Celery LLM processing tasks
+│       ├── processing.py    # Celery LLM processing tasks
+│       └── dlq.py           # Dead-letter handler
 ├── frontend/
 │   ├── index.html           # Dashboard markup
 │   ├── styles.css           # Dark-theme responsive styles
-│   └── app.js               # Client-side logic & polling
+│   └── app.js               # Client-side logic (SSE + polling fallback)
+├── tests/                   # pytest suite (SQLite + fakeredis, no services needed)
+├── .github/workflows/ci.yml # Lint + tests on push/PR
 ├── docker-compose.yml       # Full stack orchestration
 ├── Dockerfile               # Python app container
 ├── requirements.txt         # Python dependencies
+├── requirements-dev.txt     # Test/lint dependencies
 └── .env.example             # Environment variable template
 ```
+
+## Tests
+
+The suite runs against in-memory SQLite and fakeredis, with the LLM in heuristic-fallback
+mode, so it needs no Postgres, Redis, or broker running:
+
+```bash
+pip install -r requirements-dev.txt
+ruff check backend tests
+pytest
+```
+
+CI (`.github/workflows/ci.yml`) runs the same lint + tests on Python 3.11 and 3.12 for
+every push and pull request.
 
 ## Environment Variables
 
@@ -97,3 +165,20 @@ The URL deduplication cache uses a two-tier strategy:
 | `LLM_API_KEY` | API key for LLM provider | — |
 | `LLM_API_URL` | LLM endpoint URL | OpenAI chat completions |
 | `LLM_MODEL` | Model identifier | `gpt-4o-mini` |
+
+## What I'd do next
+
+Things I'd reach for as the system grows, roughly in priority order:
+
+- **Semantic search over articles.** Embed each article and store the vectors so you can
+  search by meaning, not just keyword `ILIKE`.
+- **Near-duplicate detection.** The URL cache stops the *same* link being processed twice,
+  but the same story reposted on three sites still goes through three times. Embeddings +
+  a similarity threshold would catch those.
+- **Per-domain politeness/rate limiting.** Right now I honor `robots.txt`; I'd add a
+  per-domain crawl delay so a batch of URLs from one site doesn't hammer it.
+- **Push the SSE feed through a fan-out layer** (or move to WebSockets) once there are
+  enough concurrent dashboard clients that a pub/sub subscription per connection stops
+  being the simplest option.
+- **Surface the dead-letter queue in the UI** with a one-click requeue, instead of only
+  recording failures in the database.

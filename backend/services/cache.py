@@ -58,12 +58,16 @@ class URLCache:
 
     def get_stats(self) -> dict:
         size = self._client.zcard(SEEN_URLS_KEY)
-        memory_info = self._client.info("memory")
+        try:
+            used_memory = self._client.info("memory").get("used_memory_human", "N/A")
+        except redis.RedisError:
+            # INFO may be unavailable (e.g. restricted/managed Redis).
+            used_memory = "N/A"
         return {
             "cached_urls": size,
             "max_urls": MAX_URLS,
             "utilization_pct": round((size / MAX_URLS) * 100, 2) if MAX_URLS else 0,
-            "used_memory_human": memory_info.get("used_memory_human", "N/A"),
+            "used_memory_human": used_memory,
             "eviction_policy": "application-lru + server allkeys-lru fallback",
         }
 

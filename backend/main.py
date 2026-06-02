@@ -4,7 +4,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from backend.config import get_settings
 from backend.db.session import engine
 from backend.models.database import Base
 from backend.api.routes import router

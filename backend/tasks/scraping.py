@@ -11,10 +11,10 @@ from celery import shared_task
 from celery.utils.log import get_task_logger
 from sqlalchemy import update
 
-from backend.celery_app import celery
 from backend.db.session import SyncSessionLocal
 from backend.models.database import Article, TaskStatus
 from backend.services.cache import url_cache
+from backend.services.events import publish_event
 from backend.services.scraper import scraper_service
 
 logger = get_task_logger(__name__)
@@ -43,6 +43,7 @@ def scrape_article(self, article_id: str, url: str):
             .values(status=TaskStatus.SCRAPING, celery_task_id=self.request.id)
         )
         session.commit()
+        publish_event("status", article_id=article_id, status="scraping", url=url)
 
         if url_cache.has_seen(url):
             logger.info(f"URL already processed (cache hit): {url}")
@@ -61,6 +62,10 @@ def scrape_article(self, article_id: str, url: str):
                     )
                 )
                 session.commit()
+                publish_event(
+                    "status", article_id=article_id, status="processing",
+                    title=existing.title, source_domain=existing.source_domain,
+                )
                 from backend.tasks.processing import process_article
                 process_article.apply_async(args=[article_id], queue="processing")
                 return {"status": "cache_hit", "article_id": article_id}
@@ -80,6 +85,11 @@ def scrape_article(self, article_id: str, url: str):
             )
         )
         session.commit()
+        publish_event(
+            "status", article_id=article_id, status="processing",
+            title=result["title"], source_domain=result["source_domain"],
+            word_count=result["word_count"],
+        )
 
         url_cache.mark_seen(url)
 
