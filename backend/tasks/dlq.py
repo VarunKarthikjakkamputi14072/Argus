@@ -1,3 +1,5 @@
+"""Dead-letter queue (DLQ) task — handles permanently failed pipeline tasks after all retries"""
+
 from backend.celery_app import celery
 from backend.db.session import SyncSessionLocal
 from backend.models.database import Article, TaskStatus
