@@ -1,3 +1,10 @@
+"""
+Database engine and session configuration.
+
+Sets up the async SQLAlchemy engine (used by FastAPI request handlers)
+and a sync engine (used by Celery tasks). Exposes async_session_factory,
+SyncSessionLocal, and the get_db FastAPI dependency.
+"""
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
