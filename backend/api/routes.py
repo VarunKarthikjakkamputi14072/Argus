@@ -13,7 +13,7 @@ import httpx
 import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, HttpUrl
+from pydantic import BaseModel, HttpUrl, Field
 from sqlalchemy import select, func, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -30,7 +30,7 @@ router = APIRouter()
 
 class SeedTopicRequest(BaseModel):
     topic: str
-    limit: int = 10  # max articles to seed per call (capped at 20)
+    limit: int = Field(default=10, le=20, description="Max articles to seed per call")
 
 
 class SubmitURLRequest(BaseModel):
@@ -150,7 +150,7 @@ async def seed_topic(request: SeedTopicRequest, db: AsyncSession = Depends(get_d
             ),
         )
 
-    limit = min(request.limit, 20)
+    limit = request.limit
 
     # Call APIForge — it handles caching, rate limiting, and circuit breaking
     # for the NewsAPI upstream so Argus doesn't have to.
