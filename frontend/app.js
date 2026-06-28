@@ -5,6 +5,7 @@ const POLL_INTERVAL = 5000;
 const POLL_INTERVAL_LIVE = 30000;
 
 let currentView = 'dashboard';
+let knownArticleIds = new Set();
 let pollTimer = null;
 let eventSource = null;
 let liveConnected = false;
@@ -19,12 +20,24 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 });
 
 function switchView(view) {
-    currentView = view;
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
-    document.querySelector(`[data-view="${view}"]`).classList.add('active');
-    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-    document.getElementById(`view-${view}`).classList.add('active');
-    refreshCurrentView();
+    if (view === currentView) return;
+
+    const apply = () => {
+        currentView = view;
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+        document.querySelector(`[data-view="${view}"]`).classList.add('active');
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        document.getElementById(`view-${view}`).classList.add('active');
+        refreshCurrentView();
+    };
+
+    // Morph between views with the View Transitions API where supported,
+    // falling back to an instant swap everywhere else.
+    if (document.startViewTransition) {
+        document.startViewTransition(apply);
+    } else {
+        apply();
+    }
 }
 
 // --- API Helpers ---
@@ -90,15 +103,27 @@ document.getElementById('status-filter').addEventListener('change', loadArticles
 
 // --- Data Loading ---
 
+function setStat(id, value) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    const next = String(value);
+    if (el.textContent === next) return;
+    el.textContent = next;
+    // Brief glow-pop so a changing number reads as "live".
+    el.classList.remove('value-bump');
+    void el.offsetWidth; // restart the animation
+    el.classList.add('value-bump');
+}
+
 async function loadStats() {
     try {
         const stats = await apiGet('/stats');
-        document.getElementById('stat-total').textContent = stats.total_articles;
-        document.getElementById('stat-completed').textContent = stats.completed;
-        document.getElementById('stat-progress').textContent = stats.in_progress;
-        document.getElementById('stat-failed').textContent = stats.failed;
-        document.getElementById('stat-sentiment').textContent = stats.avg_sentiment.toFixed(2);
-        document.getElementById('stat-cached').textContent = stats.cache?.cached_urls || 0;
+        setStat('stat-total', stats.total_articles);
+        setStat('stat-completed', stats.completed);
+        setStat('stat-progress', stats.in_progress);
+        setStat('stat-failed', stats.failed);
+        setStat('stat-sentiment', stats.avg_sentiment.toFixed(2));
+        setStat('stat-cached', stats.cache?.cached_urls || 0);
     } catch (err) {
         console.error('Failed to load stats:', err);
     }
@@ -132,8 +157,13 @@ async function loadArticles() {
         `).join('');
 
         container.querySelectorAll('.article-row').forEach(row => {
+            // Slide in rows we haven't shown before so new arrivals feel alive.
+            if (!knownArticleIds.has(row.dataset.id)) {
+                row.classList.add('row-enter');
+            }
             row.addEventListener('click', () => openArticleModal(row.dataset.id));
         });
+        knownArticleIds = new Set(articles.map(a => String(a.id)));
     } catch (err) {
         container.innerHTML = `<p class="empty-state">Error loading articles: ${err.message}</p>`;
     }
@@ -321,9 +351,18 @@ function applyStatusEvent(evt) {
     const row = document.querySelector(`.article-row[data-id="${evt.article_id}"]`);
     if (row) {
         const badge = row.querySelector('.status-badge');
-        if (badge) {
+        if (badge && badge.textContent !== evt.status) {
             badge.textContent = evt.status;
             badge.className = `status-badge status-${evt.status}`;
+            // Flash the whole row green on success / red on failure, then fade back.
+            const flash = evt.status === 'completed' ? 'flash-success'
+                        : evt.status === 'failed' ? 'flash-error'
+                        : null;
+            if (flash) {
+                row.classList.remove('flash-success', 'flash-error');
+                void row.offsetWidth;
+                row.classList.add(flash);
+            }
         }
         if (evt.title) {
             const titleEl = row.querySelector('.article-title');

@@ -1,24 +1,35 @@
 :root {
-    --bg-primary: #0a0a0c;
-    --bg-secondary: #121214;
-    --bg-card: #161618;
-    --bg-hover: #1e1e20;
-    --text-primary: #f0f0f0;
-    --text-secondary: #9a9a9c;
-    --text-muted: #5e5e60;
+    --bg-primary: #07080b;
+    --bg-secondary: #0d0f14;
+    --bg-card: rgba(20, 24, 32, 0.55);
+    --bg-hover: rgba(34, 40, 52, 0.65);
+    --text-primary: #f0f3f7;
+    --text-secondary: #98a2b3;
+    --text-muted: #5a6473;
     --accent: #ffffff;
     --accent-hover: #e0e0e0;
-    --success: #88c0a0;
-    --warning: #d0a070;
-    --error: #c07070;
-    --info: #80a0c0;
-    --border: rgba(255, 255, 255, 0.08);
-    --border-hover: rgba(255, 255, 255, 0.2);
+
+    /* Neon command-center accents (replacing the muted earth tones) */
+    --success: #34f5c5;   /* emerald-cyan */
+    --warning: #ffb454;   /* amber */
+    --error: #ff6b81;     /* hot coral */
+    --info: #4cc9f0;      /* electric cyan */
+    --neon: #4cc9f0;
+
+    /* Glows tuned to each accent */
+    --glow-success: 0 0 0 1px rgba(52, 245, 197, 0.4), 0 0 18px rgba(52, 245, 197, 0.25);
+    --glow-warning: 0 0 0 1px rgba(255, 180, 84, 0.4), 0 0 18px rgba(255, 180, 84, 0.25);
+    --glow-error: 0 0 0 1px rgba(255, 107, 129, 0.4), 0 0 18px rgba(255, 107, 129, 0.25);
+    --glow-info: 0 0 0 1px rgba(76, 201, 240, 0.4), 0 0 18px rgba(76, 201, 240, 0.25);
+
+    --border: rgba(140, 170, 220, 0.10);
+    --border-hover: rgba(140, 170, 220, 0.28);
     --radius: 2px;
     --radius-sm: 0px;
     --shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+    --blur: 14px;
     --transition: 400ms cubic-bezier(0.16, 1, 0.3, 1);
-    
+
     --font-sans: 'Inter', sans-serif;
     --font-serif: 'Playfair Display', serif;
 }
@@ -37,6 +48,21 @@ body {
     min-height: 100vh;
     font-weight: 300;
     letter-spacing: 0.02em;
+    position: relative;
+}
+
+/* Faint command-center grid + radial glow behind everything */
+body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background:
+        radial-gradient(1100px 700px at 80% -10%, rgba(76, 201, 240, 0.07), transparent 60%),
+        radial-gradient(900px 600px at 0% 110%, rgba(52, 245, 197, 0.05), transparent 60%),
+        linear-gradient(rgba(140, 170, 220, 0.035) 1px, transparent 1px) 0 0 / 100% 44px,
+        linear-gradient(90deg, rgba(140, 170, 220, 0.035) 1px, transparent 1px) 0 0 / 44px 100%;
 }
 
 .app {
@@ -135,24 +161,48 @@ body {
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 1px;
-    background: var(--border);
-    border: 1px solid var(--border);
+    gap: 16px;
     margin-bottom: 60px;
 }
 
 .stat-card {
-    background: var(--bg-primary);
-    padding: 30px 24px;
+    background: var(--bg-card);
+    -webkit-backdrop-filter: blur(var(--blur));
+    backdrop-filter: blur(var(--blur));
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 28px 24px;
     display: flex;
     flex-direction: column;
     gap: 12px;
-    transition: background var(--transition);
+    position: relative;
+    overflow: hidden;
+    transition: border-color var(--transition), transform var(--transition), box-shadow var(--transition);
 }
+
+/* Thin neon top-edge that lights up per card status */
+.stat-card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--text-muted);
+    opacity: 0.4;
+    transition: opacity var(--transition);
+}
+.stat-success::before { background: var(--success); }
+.stat-warning::before { background: var(--warning); }
+.stat-error::before   { background: var(--error); }
+.stat-info::before    { background: var(--info); }
 
 .stat-card:hover {
     background: var(--bg-hover);
+    border-color: var(--border-hover);
+    transform: translateY(-2px);
 }
+.stat-card:hover::before { opacity: 1; }
 
 .stat-label {
     font-size: 0.7rem;
@@ -167,10 +217,10 @@ body {
     font-weight: 400;
 }
 
-.stat-success .stat-value { color: var(--success); }
-.stat-warning .stat-value { color: var(--warning); }
-.stat-error .stat-value { color: var(--error); }
-.stat-info .stat-value { color: var(--info); }
+.stat-success .stat-value { color: var(--success); text-shadow: 0 0 22px rgba(52, 245, 197, 0.35); }
+.stat-warning .stat-value { color: var(--warning); text-shadow: 0 0 22px rgba(255, 180, 84, 0.30); }
+.stat-error .stat-value { color: var(--error); text-shadow: 0 0 22px rgba(255, 107, 129, 0.30); }
+.stat-info .stat-value { color: var(--info); text-shadow: 0 0 22px rgba(76, 201, 240, 0.35); }
 
 /* Typography Scale */
 h2, h3 {
@@ -374,17 +424,30 @@ h2, h3 {
 }
 
 .status-badge {
-    font-size: 0.7rem;
+    font-size: 0.65rem;
     text-transform: uppercase;
-    letter-spacing: 0.1em;
+    letter-spacing: 0.12em;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid currentColor;
+    white-space: nowrap;
 }
 
-.status-completed { color: var(--success); }
+.status-completed { color: var(--success); box-shadow: var(--glow-success); }
 .status-started,
 .status-scraping,
-.status-processing { color: var(--warning); }
-.status-failed { color: var(--error); }
-.status-pending { color: var(--text-muted); }
+.status-processing {
+    color: var(--warning);
+    animation: pulse-glow 1.6s ease-in-out infinite;
+}
+.status-failed { color: var(--error); box-shadow: var(--glow-error); }
+.status-pending { color: var(--text-muted); border-color: var(--border-hover); }
+
+/* Live "working" pulse for in-progress badges */
+@keyframes pulse-glow {
+    0%, 100% { box-shadow: 0 0 0 1px rgba(255, 180, 84, 0.25); }
+    50%      { box-shadow: 0 0 0 1px rgba(255, 180, 84, 0.6), 0 0 16px rgba(255, 180, 84, 0.45); }
+}
 
 .empty-state {
     text-align: left;
@@ -654,4 +717,75 @@ h2, h3 {
     .queue-stat { border-right: none; border-bottom: 1px solid var(--border); }
     .queue-stat:last-child { border-bottom: none; }
     .modal-content { max-width: 100%; }
+}
+
+/* ──────────────────────────────────────────────────────────
+   Live data-pipeline micro-animations (driven by SSE events)
+   ────────────────────────────────────────────────────────── */
+
+/* New rows slide in from the top of the list instead of popping in */
+.article-row.row-enter {
+    animation: row-slide-in 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@keyframes row-slide-in {
+    from { opacity: 0; transform: translateY(-12px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* A row flashes its accent then gently fades back when its status changes */
+.article-row.flash-success { animation: flash-success 1.4s ease-out; }
+.article-row.flash-error   { animation: flash-error 1.4s ease-out; }
+
+@keyframes flash-success {
+    0%   { background: rgba(52, 245, 197, 0.18); box-shadow: inset 3px 0 0 var(--success); }
+    100% { background: transparent; box-shadow: inset 0 0 0 transparent; }
+}
+@keyframes flash-error {
+    0%   { background: rgba(255, 107, 129, 0.16); box-shadow: inset 3px 0 0 var(--error); }
+    100% { background: transparent; box-shadow: inset 0 0 0 transparent; }
+}
+
+/* Stat value ticks up with a brief glow pop when its number changes */
+.stat-value.value-bump { animation: value-bump 600ms ease-out; }
+@keyframes value-bump {
+    0%   { transform: scale(1); }
+    35%  { transform: scale(1.14); filter: brightness(1.4); }
+    100% { transform: scale(1); }
+}
+
+/* ──────────────────────────────────────────────────────────
+   View Transitions API — morph between Dashboard/Insights/Queue
+   ────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: no-preference) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+        animation-duration: 420ms;
+        animation-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    ::view-transition-old(root) {
+        animation-name: vt-fade-out;
+    }
+    ::view-transition-new(root) {
+        animation-name: vt-fade-in;
+    }
+}
+@keyframes vt-fade-out {
+    to { opacity: 0; transform: translateY(-8px) scale(0.99); }
+}
+@keyframes vt-fade-in {
+    from { opacity: 0; transform: translateY(8px) scale(0.99); }
+}
+
+/* Respect users who'd rather not have motion */
+@media (prefers-reduced-motion: reduce) {
+    .view,
+    .article-row.row-enter,
+    .article-row.flash-success,
+    .article-row.flash-error,
+    .stat-value.value-bump,
+    .status-started,
+    .status-scraping,
+    .status-processing {
+        animation: none !important;
+    }
 }
