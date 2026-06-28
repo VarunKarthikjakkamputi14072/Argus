@@ -87,6 +87,55 @@ open http://localhost:8000
 The LLM API key is optional — without one, the analysis step uses the built-in heuristic
 fallback, so the full pipeline still runs end to end.
 
+## Deploying to Fly.io
+
+Argus is a multi-process app — a FastAPI web server, Celery workers, and a beat
+scheduler — so it can't run on a static host or a single serverless function. Fly.io
+runs the Docker image as several **process groups** (defined in `fly.toml`) backed by
+managed Redis and Postgres. The FastAPI app serves the dashboard at `/`, so the whole
+demo lives behind one URL.
+
+```bash
+# 1. Install + sign in
+brew install flyctl        # or: curl -L https://fly.io/install.sh | sh
+fly auth login
+
+# 2. Create the app (pick a globally unique name; update `app` in fly.toml to match)
+fly apps create argus-pipeline
+
+# 3. Provision managed data stores
+fly postgres create --name argus-db --region iad
+fly postgres attach argus-db --app argus-pipeline   # sets DATABASE_URL automatically
+fly redis create                                    # Upstash Redis; note the rediss:// URL
+
+# 4. Wire up secrets. Postgres attach gives you a postgres:// URL — Argus needs the
+#    async (asyncpg) form for the API and the sync (psycopg2) form for the workers.
+fly secrets set \
+  DATABASE_URL="postgresql+asyncpg://<user>:<pass>@<host>:5432/<db>" \
+  SYNC_DATABASE_URL="postgresql://<user>:<pass>@<host>:5432/<db>" \
+  REDIS_URL="rediss://<upstash-host>:6379/0" \
+  CELERY_BROKER_URL="rediss://<upstash-host>:6379/1" \
+  CELERY_RESULT_BACKEND="rediss://<upstash-host>:6379/2" \
+  LLM_API_KEY="<optional — omit to use the heuristic fallback>"
+
+# 5. Ship it (builds the Dockerfile, boots web + worker + beat machines)
+fly deploy
+
+# 6. Open the live dashboard
+fly open
+```
+
+Notes:
+- **Redis databases.** Upstash gives one logical DB; if you only get DB `0`, point all
+  three URLs at it — the broker/cache/result keys don't collide in practice. The
+  separate `/0` `/1` `/2` split in local Compose is just for tidiness.
+- **Scaling workers.** `fly scale count worker=3` runs three worker machines, matching
+  the three-worker Compose setup. `web` and `beat` should stay at 1.
+- **`min_machines_running = 1`** keeps the web tier warm so the demo never cold-starts on
+  a recruiter's click. Drop it to `0` to let Fly stop idle machines and save cost.
+- This is a different shape from your static/Vercel projects — those have no persistent
+  background workers or broker, which is exactly why Argus needs a container host.
+
 ## API Endpoints
 
 | Method | Path | Description |
